@@ -151,7 +151,9 @@ async def product_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
     if prod['stock'] > 0:
-        keyboard.append([InlineKeyboardButton("✅ Buyurtma berish", callback_data=f"order_{product_id}")])
+        max_qty = min(prod['stock'], 5)
+        qty_buttons = [InlineKeyboardButton(f"{q} ta", callback_data=f"qty_{product_id}_{q}") for q in range(1, max_qty + 1)]
+        keyboard.append(qty_buttons)
     keyboard.append([InlineKeyboardButton("🔙 Katalogga qaytish", callback_data="catalog_0")])
 
     text = (
@@ -169,6 +171,28 @@ async def product_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ==============================
+# MIQDOR TANLASH
+# ==============================
+async def select_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    parts = query.data.split("_")
+    product_id = int(parts[1])
+    quantity = int(parts[2])
+    context.user_data["ordering_product"] = product_id
+    context.user_data["ordering_quantity"] = quantity
+    context.user_data["order_step"] = "name"
+    prod = next((p for p in PRODUCTS if p["id"] == product_id), None)
+    await query.edit_message_text(
+        f"📝 *Buyurtma berish*\n\n"
+        f"🧸 {prod['name']}\n"
+        f"🔢 Miqdor: *{quantity} ta*\n"
+        f"💰 Jami: *{prod['price'] * quantity:,} so\'m*\n\n"
+        f"Ismingizni kiriting:",
+        parse_mode="Markdown"
+    )
+
+# ==============================
 # BUYURTMA BERISH
 # ==============================
 async def place_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -176,6 +200,7 @@ async def place_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     product_id = int(query.data.split("_")[1])
     context.user_data["ordering_product"] = product_id
+    context.user_data["ordering_quantity"] = 1
     context.user_data["order_step"] = "name"
     await query.edit_message_text(
         "📝 *Buyurtma berish*\n\nIsmingizni kiriting:",
@@ -209,6 +234,8 @@ async def handle_order_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         product_id = context.user_data.get("ordering_product", 1)
         prod = next((p for p in PRODUCTS if p["id"] == product_id), {"name": "Noma'lum", "price": 0})
 
+        quantity = context.user_data.get("ordering_quantity", 1)
+        total_price = prod["price"] * quantity
         order = {
             "id": order_id,
             "user_id": update.effective_user.id,
@@ -216,7 +243,8 @@ async def handle_order_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "phone": context.user_data["order_phone"],
             "address": context.user_data["order_address"],
             "product": prod["name"],
-            "price": prod["price"],
+            "quantity": quantity,
+            "price": total_price,
             "status": "Yangi"
         }
         orders.append(order)
@@ -225,7 +253,8 @@ async def handle_order_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"✅ *Buyurtmangiz qabul qilindi!*\n\n"
             f"🔢 Buyurtma №: *{order_id}*\n"
             f"🧸 Mahsulot: *{prod['name']}*\n"
-            f"💰 Narx: *{prod['price']:,} so'm*\n"
+            f"🔢 Miqdor: *{quantity} ta*\n"
+            f"💰 Jami narx: *{total_price:,} so'm*\n"
             f"📍 Manzil: {order['address']}\n\n"
             f"Tez orada siz bilan bog'lanamiz! 📞",
             parse_mode="Markdown"
@@ -241,7 +270,8 @@ async def handle_order_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         f"📱 Tel: {order['phone']}\n"
                         f"📍 Manzil: {order['address']}\n"
                         f"🧸 Mahsulot: {prod['name']}\n"
-                        f"💰 Narx: {prod['price']:,} so'm"
+                        f"🔢 Miqdor: {quantity} ta\n"
+                        f"💰 Jami: {total_price:,} so'm"
                     ),
                     parse_mode="Markdown",
                     reply_markup=InlineKeyboardMarkup([[
@@ -369,6 +399,7 @@ def main():
     app.add_handler(CallbackQueryHandler(contact, pattern="^contact$"))
     app.add_handler(CallbackQueryHandler(back_main, pattern="^back_main$"))
     app.add_handler(CallbackQueryHandler(product_detail, pattern="^product_\\d+$"))
+    app.add_handler(CallbackQueryHandler(select_quantity, pattern="^qty_\\d+_\\d+$"))
     app.add_handler(CallbackQueryHandler(place_order, pattern="^order_\\d+$"))
     app.add_handler(CallbackQueryHandler(admin_action, pattern="^(confirm|cancel)_\\d+$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_order_input))
