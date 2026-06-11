@@ -1,12 +1,18 @@
 import logging
 import json
 import os
+try:
+    from billzio_api import BillzHandler
+    BILLZ_AVAILABLE = True
+except ImportError:
+    BILLZ_AVAILABLE = False
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # === SOZLAMALAR ===
 BOT_TOKEN = "8643289539:AAHMrcGQFhjKqwUOEO-OAWXUKYlBAKllszk"
 ADMIN_ID = 296474181
+BILLZ_API_KEY = "8aa971732f660dfa83cbd9bb282dd41ee4790a3bae7eca88085dad3a5c12baee54ecf31dddc51ab1101cd805c7cea16af9750be6a1bc78ac6c1cc52091de9645a22777f1c1d81bfc9e8e8c85fb457ff68bf03d805927fbd782cfc3038cc9fdedb2b132509cf917f224185b27a0342554e31f8f8a116d61fc"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,6 +24,58 @@ order_counter = [1]
 # MAHSULOTLARNI YUKLASH
 # ==============================
 def load_products():
+    # Billz API dan mahsulotlar olishga urinish
+    if BILLZ_AVAILABLE:
+        try:
+            handler = BillzHandler(BILLZ_API_KEY)
+            result = handler.get_products()
+            if result and result.products:
+                products = []
+                for i, p in enumerate(result.products):
+                    # Rasm URL olish
+                    photo = None
+                    if hasattr(p, 'photo') and p.photo:
+                        photo = p.photo
+                    elif hasattr(p, 'image') and p.image:
+                        photo = p.image
+                    elif hasattr(p, 'photos') and p.photos:
+                        photo = p.photos[0] if isinstance(p.photos, list) else p.photos
+
+                    # Narx olish
+                    price = 0
+                    if hasattr(p, 'price') and p.price:
+                        price = int(p.price)
+                    elif hasattr(p, 'selling_price') and p.selling_price:
+                        price = int(p.selling_price)
+
+                    # Ombor
+                    stock = 0
+                    if hasattr(p, 'quantity') and p.quantity:
+                        stock = int(p.quantity)
+
+                    # Kategoriya
+                    category = ""
+                    if hasattr(p, 'category') and p.category:
+                        category = str(p.category)
+
+                    products.append({
+                        "id": i + 1,
+                        "name": str(p.name) if hasattr(p, 'name') else f"Mahsulot {i+1}",
+                        "price": price,
+                        "stock": stock,
+                        "photo": photo,
+                        "desc": str(p.description) if hasattr(p, 'description') and p.description else "",
+                        "category": category
+                    })
+                logger.info(f"Billz API dan {len(products)} ta mahsulot olindi (rasmlar bilan)")
+                # Keshga saqlash
+                with open("products.json", "w", encoding="utf-8") as f:
+                    json.dump(products, f, ensure_ascii=False, indent=2)
+                return products
+        except Exception as e:
+            logger.warning(f"Billz API xatosi: {e}, JSON dan yuklanmoqda...")
+
+    # JSON dan yuklash (zaxira)
     try:
         with open("products.json", "r", encoding="utf-8") as f:
             return json.load(f)
@@ -151,9 +209,7 @@ async def product_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
     if prod['stock'] > 0:
-        max_qty = min(prod['stock'], 5)
-        qty_buttons = [InlineKeyboardButton(f"{q} ta", callback_data=f"qty_{product_id}_{q}") for q in range(1, max_qty + 1)]
-        keyboard.append(qty_buttons)
+        keyboard.append([InlineKeyboardButton("✅ Buyurtma berish", callback_data=f"order_{product_id}")])
     keyboard.append([InlineKeyboardButton("🔙 Katalogga qaytish", callback_data="catalog_0")])
 
     text = (
@@ -199,11 +255,15 @@ async def place_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     product_id = int(query.data.split("_")[1])
+    prod = next((p for p in PRODUCTS if p["id"] == product_id), None)
     context.user_data["ordering_product"] = product_id
-    context.user_data["ordering_quantity"] = 1
-    context.user_data["order_step"] = "name"
+    context.user_data["order_step"] = "quantity"
     await query.edit_message_text(
-        "📝 *Buyurtma berish*\n\nIsmingizni kiriting:",
+        f"📝 *Buyurtma berish*\n\n"
+        f"🧸 {prod['name']}\n"
+        f"💰 Narxi: {prod['price']:,} so'm\n"
+        f"📦 Omborda: {prod['stock']} ta\n\n"
+        f"Nechta buyurtma bermoqchisiz? (raqam kiriting):",
         parse_mode="Markdown"
     )
 
@@ -213,6 +273,21 @@ async def handle_order_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if step == "search":
         context.user_data["order_step"] = None
         await search_products(update.message.text, update, context)
+
+    elif step == "quantity":
+        text = update.message.text.strip()
+        if not text.isdigit() or int(text) < 1:
+            await update.message.reply_text("❌ Iltimos, to'g'ri raqam kiriting (masalan: 2):")
+            return
+        product_id = context.user_data.get("ordering_product")
+        prod = next((p for p in PRODUCTS if p["id"] == product_id), None)
+        qty = int(text)
+        if prod and qty > prod['stock']:
+            await update.message.reply_text(f"❌ Omborda faqat {prod['stock']} ta bor. Kamroq kiriting:")
+            return
+        context.user_data["ordering_quantity"] = qty
+        context.user_data["order_step"] = "name"
+        await update.message.reply_text("👤 Ismingizni kiriting:")
 
     elif step == "name":
         context.user_data["order_name"] = update.message.text
