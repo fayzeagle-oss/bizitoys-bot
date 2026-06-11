@@ -23,61 +23,89 @@ order_counter = [1]
 # ==============================
 # MAHSULOTLARNI YUKLASH
 # ==============================
-def load_products():
-    # Billz API dan mahsulotlar olishga urinish
-    if BILLZ_AVAILABLE:
+def fetch_from_billz():
+    """Billz API dan mahsulotlarni rasmlar bilan olish"""
+    import requests as req
+    all_products = []
+    page = 1
+    limit = 100
+
+    while True:
         try:
-            handler = BillzHandler(BILLZ_API_KEY)
-            result = handler.get_products()
-            if result and result.products:
-                products = []
-                for i, p in enumerate(result.products):
-                    # Rasm URL olish
-                    photo = None
-                    if hasattr(p, 'photo') and p.photo:
-                        photo = p.photo
-                    elif hasattr(p, 'image') and p.image:
-                        photo = p.image
-                    elif hasattr(p, 'photos') and p.photos:
-                        photo = p.photos[0] if isinstance(p.photos, list) else p.photos
+            resp = req.get(
+                "https://api-admin.billz.ai/v2/products",
+                headers={
+                    "accept": "application/json",
+                    "Authorization": f"Bearer {BILLZ_API_KEY}"
+                },
+                params={"limit": limit, "page": page},
+                timeout=15
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Billz API xato: {resp.status_code}")
+                break
 
-                    # Narx olish
-                    price = 0
-                    if hasattr(p, 'price') and p.price:
-                        price = int(p.price)
-                    elif hasattr(p, 'selling_price') and p.selling_price:
-                        price = int(p.selling_price)
+            data = resp.json()
+            products_data = data.get("products", [])
+            if not products_data:
+                break
 
-                    # Ombor
-                    stock = 0
-                    if hasattr(p, 'quantity') and p.quantity:
-                        stock = int(p.quantity)
+            for p in products_data:
+                # Rasm olish
+                photo = p.get("main_image_url") or None
+                if not photo:
+                    photos = p.get("photos", [])
+                    if photos:
+                        photo = photos[0].get("photo_url")
 
-                    # Kategoriya
-                    category = ""
-                    if hasattr(p, 'category') and p.category:
-                        category = str(p.category)
+                # Kategoriya
+                categories = p.get("categories", [])
+                category = categories[0].get("name", "") if categories else ""
 
-                    products.append({
-                        "id": i + 1,
-                        "name": str(p.name) if hasattr(p, 'name') else f"Mahsulot {i+1}",
-                        "price": price,
-                        "stock": stock,
-                        "photo": photo,
-                        "desc": str(p.description) if hasattr(p, 'description') and p.description else "",
-                        "category": category
-                    })
-                logger.info(f"Billz API dan {len(products)} ta mahsulot olindi (rasmlar bilan)")
-                # Keshga saqlash
-                with open("products.json", "w", encoding="utf-8") as f:
-                    json.dump(products, f, ensure_ascii=False, indent=2)
-                return products
+                # Narx - selling_price dan olish
+                price = 0
+                attrs = p.get("product_attributes", [])
+                if attrs:
+                    price = int(attrs[0].get("selling_price", 0) or 0)
+
+                all_products.append({
+                    "id": len(all_products) + 1,
+                    "billz_id": p.get("id", ""),
+                    "name": p.get("name", f"Mahsulot {len(all_products)+1}"),
+                    "price": price,
+                    "stock": 0,
+                    "photo": photo,
+                    "desc": p.get("description", "") or "",
+                    "category": category
+                })
+
+            if len(products_data) < limit:
+                break
+            page += 1
+
         except Exception as e:
-            logger.warning(f"Billz API xatosi: {e}, JSON dan yuklanmoqda...")
+            logger.warning(f"Billz API xatosi: {e}")
+            break
+
+    return all_products
+
+
+def load_products():
+    # Billz API dan mahsulotlarni olish
+    try:
+        products = fetch_from_billz()
+        if products:
+            logger.info(f"Billz API dan {len(products)} ta mahsulot olindi")
+            with open("products.json", "w", encoding="utf-8") as f:
+                json.dump(products, f, ensure_ascii=False, indent=2)
+            return products
+    except Exception as e:
+        logger.warning(f"Billz API xatosi: {e}")
 
     # JSON dan yuklash (zaxira)
     try:
         with open("products.json", "r", encoding="utf-8") as f:
+            logger.info("JSON dan yuklanmoqda...")
             return json.load(f)
     except:
         return []
